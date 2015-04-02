@@ -22,18 +22,11 @@
  *   Intel Corporation
  */
 
-#include <linux/eventfd.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/rcupdate.h>
 #include <linux/file.h>
-#include <linux/slab.h>
-#include <linux/fs.h>
-#include <linux/mmu_context.h>
-#include <linux/sched.h>
-#include <asm/mmu_context.h>
 #include <linux/fdtable.h>
+#include <linux/syscalls.h>
 
 #include "eventfd_link.h"
 
