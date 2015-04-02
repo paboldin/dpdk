@@ -65,9 +65,8 @@ put_files_struct(struct files_struct *files)
 		BUG();
 }
 
-
-static long
-eventfd_link_ioctl(struct file *f, unsigned int ioctl, unsigned long arg)
+static inline long
+eventfd_link_ioctl_copy(unsigned long arg)
 {
 	void __user *argp = (void __user *) arg;
 	struct task_struct *task_target = NULL;
@@ -76,90 +75,98 @@ eventfd_link_ioctl(struct file *f, unsigned int ioctl, unsigned long arg)
 	struct fdtable *fdt;
 	struct eventfd_copy eventfd_copy;
 
+	if (copy_from_user(&eventfd_copy, argp,
+		sizeof(struct eventfd_copy)))
+		return -EFAULT;
+
+	/*
+	 * Find the task struct for the target pid
+	 */
+	task_target =
+		pid_task(find_vpid(eventfd_copy.target_pid), PIDTYPE_PID);
+	if (task_target == NULL) {
+		pr_debug("Failed to get mem ctx for target pid\n");
+		return -EFAULT;
+	}
+
+	files = get_files_struct(current);
+	if (files == NULL) {
+		pr_debug("Failed to get files struct\n");
+		return -EFAULT;
+	}
+
+	rcu_read_lock();
+	file = fcheck_files(files, eventfd_copy.source_fd);
+	if (file) {
+		if (file->f_mode & FMODE_PATH ||
+			!atomic_long_inc_not_zero(&file->f_count))
+			file = NULL;
+	}
+	rcu_read_unlock();
+	put_files_struct(files);
+
+	if (file == NULL) {
+		pr_debug("Failed to get file from source pid\n");
+		return 0;
+	}
+
+	/*
+	 * Release the existing eventfd in the source process
+	 */
+	spin_lock(&files->file_lock);
+	fput(file);
+	filp_close(file, files);
+	fdt = files_fdtable(files);
+	fdt->fd[eventfd_copy.source_fd] = NULL;
+	spin_unlock(&files->file_lock);
+
+	/*
+	 * Find the file struct associated with the target fd.
+	 */
+
+	files = get_files_struct(task_target);
+	if (files == NULL) {
+		pr_debug("Failed to get files struct\n");
+		return -EFAULT;
+	}
+
+	rcu_read_lock();
+	file = fcheck_files(files, eventfd_copy.target_fd);
+	if (file) {
+		if (file->f_mode & FMODE_PATH ||
+			!atomic_long_inc_not_zero(&file->f_count))
+				file = NULL;
+	}
+	rcu_read_unlock();
+	put_files_struct(files);
+
+	if (file == NULL) {
+		pr_debug("Failed to get file from target pid\n");
+		return 0;
+	}
+
+	/*
+	 * Install the file struct from the target process into the
+	 * file desciptor of the source process,
+	 */
+
+	fd_install(eventfd_copy.source_fd, file);
+
+	return 0;
+}
+
+static long
+eventfd_link_ioctl(struct file *f, unsigned int ioctl, unsigned long arg)
+{
+	long ret = -ENOIOCTLCMD;
+
 	switch (ioctl) {
 	case EVENTFD_COPY:
-		if (copy_from_user(&eventfd_copy, argp,
-			sizeof(struct eventfd_copy)))
-			return -EFAULT;
-
-		/*
-		 * Find the task struct for the target pid
-		 */
-		task_target =
-			pid_task(find_vpid(eventfd_copy.target_pid), PIDTYPE_PID);
-		if (task_target == NULL) {
-			pr_debug("Failed to get mem ctx for target pid\n");
-			return -EFAULT;
-		}
-
-		files = get_files_struct(current);
-		if (files == NULL) {
-			pr_debug("Failed to get files struct\n");
-			return -EFAULT;
-		}
-
-		rcu_read_lock();
-		file = fcheck_files(files, eventfd_copy.source_fd);
-		if (file) {
-			if (file->f_mode & FMODE_PATH ||
-				!atomic_long_inc_not_zero(&file->f_count))
-				file = NULL;
-		}
-		rcu_read_unlock();
-		put_files_struct(files);
-
-		if (file == NULL) {
-			pr_debug("Failed to get file from source pid\n");
-			return 0;
-		}
-
-		/*
-		 * Release the existing eventfd in the source process
-		 */
-		spin_lock(&files->file_lock);
-		fput(file);
-		filp_close(file, files);
-		fdt = files_fdtable(files);
-		fdt->fd[eventfd_copy.source_fd] = NULL;
-		spin_unlock(&files->file_lock);
-
-		/*
-		 * Find the file struct associated with the target fd.
-		 */
-
-		files = get_files_struct(task_target);
-		if (files == NULL) {
-			pr_debug("Failed to get files struct\n");
-			return -EFAULT;
-		}
-
-		rcu_read_lock();
-		file = fcheck_files(files, eventfd_copy.target_fd);
-		if (file) {
-			if (file->f_mode & FMODE_PATH ||
-				!atomic_long_inc_not_zero(&file->f_count))
-					file = NULL;
-		}
-		rcu_read_unlock();
-		put_files_struct(files);
-
-		if (file == NULL) {
-			pr_debug("Failed to get file from target pid\n");
-			return 0;
-		}
-
-		/*
-		 * Install the file struct from the target process into the
-		 * file desciptor of the source process,
-		 */
-
-		fd_install(eventfd_copy.source_fd, file);
-
-		return 0;
-
-	default:
-		return -ENOIOCTLCMD;
+		ret = eventfd_link_ioctl_copy(arg);
+		break;
 	}
+
+	return ret;
 }
 
 static const struct file_operations eventfd_link_fops = {
