@@ -92,33 +92,38 @@ eventfd_link_ioctl_copy(unsigned long arg)
 	struct files_struct *files;
 	struct fdtable *fdt;
 	struct eventfd_copy eventfd_copy;
+	long ret = -EFAULT;
 
-	if (copy_from_user(&eventfd_copy, argp,
-		sizeof(struct eventfd_copy)))
-		return -EFAULT;
+	if (copy_from_user(&eventfd_copy, argp, sizeof(struct eventfd_copy)))
+		goto out;
 
 	/*
 	 * Find the task struct for the target pid
 	 */
+	ret = -ESRCH;
+
 	task_target =
-		pid_task(find_vpid(eventfd_copy.target_pid), PIDTYPE_PID);
+		get_pid_task(find_vpid(eventfd_copy.target_pid), PIDTYPE_PID);
 	if (task_target == NULL) {
-		pr_debug("Failed to get mem ctx for target pid\n");
-		return -EFAULT;
+		pr_info("Unable to find pid %d\n", eventfd_copy.target_pid);
+		goto out;
 	}
 
+	ret = -ESTALE;
 	files = get_files_struct(current);
 	if (files == NULL) {
-		pr_debug("Failed to get files struct\n");
-		return -EFAULT;
+		pr_info("Failed to get current files struct\n");
+		goto out_task;
 	}
 
+	ret = -EBADF;
 	file = fget_from_files(files, eventfd_copy.source_fd);
-	put_files_struct(files);
 
 	if (file == NULL) {
-		pr_debug("Failed to get file from source pid\n");
-		return 0;
+		pr_info("Failed to get fd %d from source\n",
+			eventfd_copy.source_fd);
+		put_files_struct(files);
+		goto out_task;
 	}
 
 	/*
@@ -131,22 +136,27 @@ eventfd_link_ioctl_copy(unsigned long arg)
 	fdt->fd[eventfd_copy.source_fd] = NULL;
 	spin_unlock(&files->file_lock);
 
+	put_files_struct(files);
+
 	/*
 	 * Find the file struct associated with the target fd.
 	 */
 
+	ret = -ESTALE;
 	files = get_files_struct(task_target);
 	if (files == NULL) {
-		pr_debug("Failed to get files struct\n");
-		return -EFAULT;
+		pr_info("Failed to get target files struct\n");
+		goto out_task;
 	}
 
+	ret = -EBADF;
 	file = fget_from_files(files, eventfd_copy.target_fd);
 	put_files_struct(files);
 
 	if (file == NULL) {
-		pr_debug("Failed to get file from target pid\n");
-		return 0;
+		pr_info("Failed to get fd %d from target\n",
+			eventfd_copy.target_fd);
+		goto out_task;
 	}
 
 	/*
@@ -155,8 +165,12 @@ eventfd_link_ioctl_copy(unsigned long arg)
 	 */
 
 	fd_install(eventfd_copy.source_fd, file);
+	ret = 0;
 
-	return 0;
+out_task:
+	put_task_struct(task_target);
+out:
+	return ret;
 }
 
 static long
