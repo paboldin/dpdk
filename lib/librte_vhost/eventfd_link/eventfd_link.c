@@ -65,6 +65,24 @@ put_files_struct(struct files_struct *files)
 		BUG();
 }
 
+static struct file *
+fget_from_files(struct files_struct *files, unsigned fd)
+{
+	struct file *file;
+
+	rcu_read_lock();
+	file = fcheck_files(files, fd);
+	if (file)
+	{
+		if (file->f_mode & FMODE_PATH
+			|| !atomic_long_inc_not_zero(&file->f_count))
+		    file = NULL;
+	}
+	rcu_read_unlock();
+
+	return file;
+}
+
 static inline long
 eventfd_link_ioctl_copy(unsigned long arg)
 {
@@ -95,14 +113,7 @@ eventfd_link_ioctl_copy(unsigned long arg)
 		return -EFAULT;
 	}
 
-	rcu_read_lock();
-	file = fcheck_files(files, eventfd_copy.source_fd);
-	if (file) {
-		if (file->f_mode & FMODE_PATH ||
-			!atomic_long_inc_not_zero(&file->f_count))
-			file = NULL;
-	}
-	rcu_read_unlock();
+	file = fget_from_files(files, eventfd_copy.source_fd);
 	put_files_struct(files);
 
 	if (file == NULL) {
@@ -130,14 +141,7 @@ eventfd_link_ioctl_copy(unsigned long arg)
 		return -EFAULT;
 	}
 
-	rcu_read_lock();
-	file = fcheck_files(files, eventfd_copy.target_fd);
-	if (file) {
-		if (file->f_mode & FMODE_PATH ||
-			!atomic_long_inc_not_zero(&file->f_count))
-				file = NULL;
-	}
-	rcu_read_unlock();
+	file = fget_from_files(files, eventfd_copy.target_fd);
 	put_files_struct(files);
 
 	if (file == NULL) {
