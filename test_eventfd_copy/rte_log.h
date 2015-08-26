@@ -1,0 +1,2 @@
+
+#define RTE_LOG(...)
